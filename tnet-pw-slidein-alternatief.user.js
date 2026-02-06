@@ -147,9 +147,12 @@ function waitForElement(selector) {
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function adjustForProductHeader() {
+async function adjustForProductHeader() {
   // Zorg dat de header mooi in beeld staat
   window.scrollTo(0, 0);
+  // Ook hier wachten we weer even want moderne frameworks zijn een ding
+  await waitForElement("twk-product-detail-page-slide-in");
+  await wait(config.hydrationTimer.value);
   // Bepaal de hoogte van de product header en gebruik deze
   const headerEle = document.querySelector(".header-grid");
   const headerHeight = headerEle.offsetHeight;
@@ -189,8 +192,6 @@ function slideInIsOpen() {
         '[data-modal="twk-product-detail-page-slide-in"]',
       );
       if (slideInTargetButton) {
-        await waitForElement("twk-product-detail-page-slide-in");
-        await wait(50);
         adjustForProductHeader();
       }
     });
