@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name          T.net pricewatch slide-in alternatief
 // @match         https://tweakers.net/pricewatch/*/*.html
-// @version       1.1
+// @version       1.2
 // @author        creesch
 // @icon          https://www.google.com/s2/favicons?sz=64&domain=tweakers.net
 // @description   Laat de pricewatch slide-in meer werken als gewone tabs
@@ -14,7 +14,9 @@
 // @updateURL     https://raw.githubusercontent.com/creesch/tnet-pricewatch-slidein-alternatief/main/tnet-pw-slidein-alternatief.user.js
 // ==/UserScript==
 
-// Instellingen, NIET hier aanpassen. Kan vanuit het GreaseMonkey/ViolentMonkey/etc menu
+/* ==========================================================================
+   Instellingen & statemanagement
+   ========================================================================== */
 const config = {
   defaultTab: {
     value: GM_getValue("defaultTab", "prices"),
@@ -33,6 +35,15 @@ const config = {
     menuId: null,
   },
 };
+
+const state = {
+  slideInFixerExtraTabs: null,
+  alreadyAddedMissingTabs: false,
+};
+
+/* ==========================================================================
+   Menu beheer. GreaseMonkey/ViolentMonkey popup menu management voor instellingen.
+   ========================================================================== */
 
 function updateMenu() {
   if (config.defaultTab.menuId) {
@@ -96,48 +107,71 @@ function updateMenu() {
     },
   );
 }
-updateMenu();
 
-// Minimale CSS aanpassingen
-const sheet = new CSSStyleSheet();
-sheet.replaceSync(`
-.dropdown-menu,
-twk-price-alert-popup,
-twk-product-collection-popup,
-.selectedProductsPopup,
-.lg-container.lg-show {
-    z-index: 999999 !important;
+/* ==========================================================================
+   Styling - minimale CSS aanpassingen
+   ========================================================================== */
+function addCustomStyling() {
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(`
+  .dropdown-menu,
+  twk-price-alert-popup,
+  twk-product-collection-popup,
+  .selectedProductsPopup,
+  .lg-container.lg-show {
+      z-index: 999999 !important;
+  }
+
+  .modal.slide-in[active] .modal__container {
+      animation-delay: 0s !important;
+      animation-duration: 0s!important;
+  }
+
+  .modal.slide-in .modal__body, .modal.slide-in .modal__footer, .modal.slide-in .modal__header {
+      width: auto;
+  }
+
+  .modal.slide-in .modal__container {
+      margin: auto !important;
+      left: 0 !important;
+      right: 0 !important;
+  }
+
+  div#slide-in-fixer-elements {
+      display: flex;
+  }
+  `);
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
 }
 
-.modal.slide-in[active] .modal__container {
-    animation-delay: 0s !important;
-    animation-duration: 0s!important;
-}
+/* ==========================================================================
+   Utility functies
+   ========================================================================== */
 
-.modal.slide-in .modal__body, .modal.slide-in .modal__footer, .modal.slide-in .modal__header {
-    width: auto;
-}
-
-.modal.slide-in .modal__container {
-    margin: auto !important;
-    left: 0 !important;
-    right: 0 !important;
-}
-`);
-document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
-
-// Shenigans met moderne frameworks, document-idle is geen goede indicator.
-function waitForElement(selector) {
+/**
+ * Shenigans met moderne frameworks, document-idle is geen goede indicator dat we iets met de pagina kunnen doen.
+ * Wacht op een specifiek element met een timeout.
+ *
+ * @param {string} selector
+ * @param {number} [timeout=200] - (default 200ms).
+ * @returns {Promise<Element|null>}
+ */
+function waitForElement(selector, timeout = 200) {
   return new Promise((resolve) => {
     if (document.querySelector(selector)) {
       return resolve(document.querySelector(selector));
     }
     const observer = new MutationObserver((mutations) => {
       if (document.querySelector(selector)) {
+        clearTimeout(timer);
         observer.disconnect();
         resolve(document.querySelector(selector));
       }
     });
+    const timer = setTimeout(() => {
+      observer.disconnect();
+      resolve(null);
+    }, timeout);
     observer.observe(document.body, {
       childList: true,
       subtree: true,
@@ -145,13 +179,26 @@ function waitForElement(selector) {
   });
 }
 
+/**
+ * Wait functie voor gebruik in async context. `await wait(200)`
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/* ==========================================================================
+   Functionele logica
+   ========================================================================== */
+
+/**
+ * Hier scrollen we naar boven zodat de product header zichtbaar is en passen we de slide-in aan zodat deze er mooi onder past.
+ * @returns {Promise<void>}
+ */
 async function adjustForProductHeader() {
   // Zorg dat de header mooi in beeld staat
   window.scrollTo(0, 0);
   // Ook hier wachten we weer even want moderne frameworks zijn een ding
-  await waitForElement("twk-product-detail-page-slide-in");
+  await waitForElement("twk-product-detail-page-slide-in", 1000);
   await wait(config.hydrationTimer.value);
   // Bepaal de hoogte van de product header en gebruik deze
   const headerEle = document.querySelector(".header-grid");
@@ -165,35 +212,103 @@ async function adjustForProductHeader() {
     .forEach((ele) => ele.removeAttribute("inert"));
 }
 
+/**
+ * What's in a name?
+ * @returns {boolean}
+ */
 function slideInIsOpen() {
   return location.hash.startsWith("#slide-in");
 }
 
-(async function () {
+/**
+ * Voeg custom tab container toe aan slide-in als deze nog niet bestaat.
+ */
+function addExtraTabsContainer() {
+  if (state.slideInFixerExtraTabs) {
+    return;
+  }
+  state.slideInFixerExtraTabs = document.createElement("div");
+  state.slideInFixerExtraTabs.id = "slide-in-fixer-elements";
+  document
+    .querySelector("twk-product-detail-page-slide-in .modal__header")
+    .append(state.slideInFixerExtraTabs);
+}
+
+/**
+ * Voeg alle tabs toe die niet zichtbaar zijn in de slide-in.
+ */
+async function addMissingTabs() {
+  if (state.alreadyAddedMissingTabs) {
+    return;
+  }
+  state.alreadyAddedMissingTabs = true;
+  await wait(config.hydrationTimer.value);
+  const slideInTabsEle = document.querySelector(
+    "twk-product-detail-page-slide-in .slide-in-section-tabs",
+  );
+  const tabsOutsideSlideInEle = document.querySelectorAll(
+    '.sticky-nav-container a.btn-link[href|="#section"]',
+  );
+
+  tabsOutsideSlideInEle.forEach((element) => {
+    const sectionName = element.getAttribute("href").split("-")[1];
+
+    // Vraag en aanbod tab is altijd zichtbaar in het overzicht, deze negeren we.
+    if (sectionName === "vraagaanbod") {
+      return;
+    }
+    const slideInEquivalentEle = slideInTabsEle.querySelector(
+      `button[data-target-section="${sectionName}"]`,
+    );
+    if (!slideInEquivalentEle) {
+      addExtraTabsContainer();
+      state.slideInFixerExtraTabs.append(element.cloneNode(true));
+    }
+  });
+}
+
+/* ==========================================================================
+   Initalisatie
+   ========================================================================== */
+(async function init() {
+  updateMenu();
+  addCustomStyling();
   // Open de slide in automatisch als deze nog niet open is.
   if (config.alwaysOpenSlideIn.value && !slideInIsOpen()) {
-    const slideInButtonEle = await waitForElement(
+    let slideInButtonEle = await waitForElement(
       `button.btn[data-modal="twk-product-detail-page-slide-in"][data-target-section="${config.defaultTab.value}"]`,
     );
+
+    // De prijzen tab is ook niet altijd beschikbaar helaas.
+    if (!slideInButtonEle && config.defaultTab.value === "prices") {
+      slideInButtonEle = await waitForElement(
+        'button.btn[data-modal="twk-product-detail-page-slide-in"][data-target-section="specifications"]',
+      );
+    }
     // Something something moderne frameworks.
     await wait(config.hydrationTimer.value);
     slideInButtonEle.click();
+    addMissingTabs();
   }
 
-  if (config.showProductHeader.value) {
-    // Easy mode
-    if (slideInIsOpen()) {
+  if (slideInIsOpen()) {
+    addMissingTabs();
+    if (config.showProductHeader.value) {
       adjustForProductHeader();
     }
-    // En nu moeten we nog alle momenten afhandelen waar de slidein nog niet open is.
-    document.addEventListener("click", async (e) => {
-      // Check if the clicked element OR any of its parents match the selector
-      const slideInTargetButton = e.target.closest(
-        '[data-modal="twk-product-detail-page-slide-in"]',
-      );
-      if (slideInTargetButton) {
+  }
+
+  // En nu moeten we nog alle momenten afhandelen waar de slidein nog niet open is.
+  document.addEventListener("click", async (e) => {
+    // Check if the clicked element OR any of its parents match the selector
+    const slideInTargetButton = e.target.closest(
+      '[data-modal="twk-product-detail-page-slide-in"]',
+    );
+    if (slideInTargetButton) {
+      addMissingTabs();
+      if (config.showProductHeader.value) {
         adjustForProductHeader();
       }
-    });
-  }
+    }
+  });
 })();
